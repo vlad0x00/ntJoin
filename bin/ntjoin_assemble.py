@@ -20,6 +20,7 @@ from read_fasta import read_fasta
 # Defining namedtuples
 Bed = namedtuple("Bed", ["contig", "start", "end"])
 Scaffold = namedtuple("Scaffold", ["id", "length", "sequence"])
+MinimizerInfo = namedtuple("MinimizerInfo", ["contig", "pos", "strand"])
 
 # Defining helper classes
 class PathNode:
@@ -73,7 +74,7 @@ def convert_path_index_to_name(graph, path):
 def read_minimizers(tsv_filename):
     "Read the minimizers from a file, removing duplicate minimizers"
     print("Reading minimizers:", tsv_filename, datetime.datetime.today(), file=sys.stdout)
-    mx_info = {}  # mx -> (contig, position)
+    mx_info = {}  # mx -> MinimizerInfo
     mxs = []  # List of lists of minimizers (ordered)
     dup_mxs = set()  # Set of minimizers identified as duplicates
     with open(tsv_filename, 'r') as tsv:
@@ -83,11 +84,11 @@ def read_minimizers(tsv_filename):
                 mx_pos_split = line[1].split(" ")
                 mxs.append([mx_pos.split(":")[0] for mx_pos in mx_pos_split])
                 for mx_pos in mx_pos_split:
-                    mx, pos = mx_pos.split(":")
+                    mx, pos, strand = mx_pos.split(":")
                     if mx in mx_info:  # This is a duplicate, add to dup set, don't add to dict
                         dup_mxs.add(mx)
                     else:
-                        mx_info[mx] = (line[0], int(pos))
+                        mx_info[mx] = MinimizerInfo(line[0], int(pos), strand)
 
     mx_info = {mx: mx_info[mx] for mx in mx_info if mx not in dup_mxs}
     mxs_filt = []
@@ -246,18 +247,18 @@ def calculate_gap_size(u, v, graph, list_mx_info, cur_assembly, k, min_gap):
     if not supporting_assemblies:
         return min_gap
 
-    distances = [abs(list_mx_info[assembly][v_mx][1] - list_mx_info[assembly][u_mx][1])
+    distances = [abs(list_mx_info[assembly][v_mx].pos - list_mx_info[assembly][u_mx].pos)
                  for assembly in supporting_assemblies]
     mean_dist = int(sum(distances)/len(distances)) - k
     # Correct for the overhanging sequence before/after terminal minimizers
     if u.ori == "+":
-        a = u.end - list_mx_info[cur_assembly][u_mx][1] - k
+        a = u.end - list_mx_info[cur_assembly][u_mx].pos - k
     else:
-        a = list_mx_info[cur_assembly][u_mx][1] - u.start
+        a = list_mx_info[cur_assembly][u_mx].pos - u.start
     if v.ori == "+":
-        b = list_mx_info[cur_assembly][v_mx][1] - v.start
+        b = list_mx_info[cur_assembly][v_mx].pos - v.start
     else:
-        b = v.end - list_mx_info[cur_assembly][v_mx][1] - k
+        b = v.end - list_mx_info[cur_assembly][v_mx].pos - k
 
     try:
         assert a >= 0
@@ -265,8 +266,8 @@ def calculate_gap_size(u, v, graph, list_mx_info, cur_assembly, k, min_gap):
     except:
         print("ERROR: Gap distance estimation less than 0", "Vertex 1:", u, "Vertex 2:", v,
               sep="\n")
-        print("Minimizer positions:", list_mx_info[cur_assembly][u_mx][1],
-              list_mx_info[cur_assembly][v_mx][1])
+        print("Minimizer positions:", list_mx_info[cur_assembly][u_mx].pos,
+              list_mx_info[cur_assembly][v_mx].pos)
         print("Estimated distance: ", mean_dist)
         raise AssertionError
 
@@ -280,9 +281,9 @@ def format_path(path, assembly, list_mx_info, mx_extremes, scaffolds, component_
     curr_ctg, prev_mx, first_mx = None, None, None
     positions = []
     for mx in path:
-        ctg, pos = list_mx_info[assembly][mx]
-        if ctg is curr_ctg:
-            positions.append(pos)
+        mx_info = list_mx_info[assembly][mx]
+        if mx_info.contig is curr_ctg:
+            positions.append(mx_info.pos)
         else:
             # This is either the first mx, or we are past a stretch of repeating contigs
             if curr_ctg is not None:
@@ -297,8 +298,8 @@ def format_path(path, assembly, list_mx_info, mx_extremes, scaffolds, component_
                                              contig_size=scaffolds[curr_ctg].length,
                                              first_mx=first_mx,
                                              terminal_mx=prev_mx))
-            curr_ctg = ctg
-            positions = [pos]
+            curr_ctg = mx_info.contig
+            positions = [mx_info.pos]
             first_mx = mx
         prev_mx = mx
     ori = determine_orientation(positions)
@@ -335,12 +336,12 @@ def determine_source_vertex(sources, weights, list_mx_info, graph):
     max_wt_asm = [assembly for assembly in weights
                   if weights[assembly] == max(weights.values())].pop()
     list_mx_info_maxwt = list_mx_info[max_wt_asm]
-    min_pos = min([list_mx_info_maxwt[vertex_name(graph, s)][1] for s in sources])
-    max_pos = max([list_mx_info_maxwt[vertex_name(graph, s)][1] for s in sources])
+    min_pos = min([list_mx_info_maxwt[vertex_name(graph, s)].pos for s in sources])
+    max_pos = max([list_mx_info_maxwt[vertex_name(graph, s)].pos for s in sources])
     source = [s for s in sources
-              if list_mx_info_maxwt[vertex_name(graph, s)][1] == min_pos].pop()
+              if list_mx_info_maxwt[vertex_name(graph, s)].pos == min_pos].pop()
     target = [s for s in sources
-              if list_mx_info_maxwt[vertex_name(graph, s)][1] == max_pos].pop()
+              if list_mx_info_maxwt[vertex_name(graph, s)].pos == max_pos].pop()
     return source, target
 
 def find_paths(graph, list_mx_info, mx_extremes, scaffolds, k, min_gap, weights):
@@ -504,7 +505,8 @@ def find_mx_min_max(list_mx_info, graph):
                 graph.vs().find(mx)
             except ValueError:
                 continue
-            ctg, pos = list_mx_info[assembly][mx]
+            mx_info = list_mx_info[assembly][mx]
+            ctg, pos = mx_info.contig, mx_info.pos
             if ctg in mx_extremes[assembly]:
                 mx_extremes[assembly][ctg] = (min(mx_extremes[assembly][ctg][0], pos),
                                               max(mx_extremes[assembly][ctg][1], pos))
@@ -542,7 +544,7 @@ def main():
         sys.exit(1)
 
     # Read in the minimizers for each assembly
-    list_mx_info = {}  # Dictionary of dictionaries: assembly -> mx -> (contig, position)
+    list_mx_info = {}  # Dictionary of dictionaries: assembly -> mx -> MinimizerInfo
     list_mxs = {}  # Dictionary of lists of minimizers: assembly -> [lists of mx]
     weights = {}  # Dictionary: assembly -> weight
     for assembly in args.FILES:
