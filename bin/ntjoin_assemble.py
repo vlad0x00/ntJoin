@@ -746,6 +746,8 @@ class Ntjoin:
         parser.add_argument("--agp", help="Output AGP file describing scaffolds", action="store_true")
         parser.add_argument("--no_cut", help="Do not cut input contigs, place in most representative path",
                             action="store_true")
+        parser.add_argument("--synteny", help="Synteny Mode")
+
         return parser.parse_args()
 
     def print_parameters(self):
@@ -773,6 +775,8 @@ class Ntjoin:
         "Run ntJoin graph stage"
         print("Running ntJoin v1.0.2 ...\n")
         self.print_parameters()
+        if self.args.synteny:
+            print("RUNNING IN SYNTENY MODE")
 
         # Parse the weights of each input reference assembly
         input_weights = [float(w) for w in re.split(r'\s+', self.args.r)]
